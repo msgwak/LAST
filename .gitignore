@@ -168,3 +168,4 @@ wandb/
 cache_dir/
 raw_datasets/
 raw_data/
+results/
