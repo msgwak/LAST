@@ -60,7 +60,7 @@ def update_learning_rate_per_step(lr_params, state):
     if opt_config in ["BandCdecay"]:
         # In this case we are applying the ssm learning rate to B, even though
         # we are also using weight decay on B
-        state.opt_state.inner_states['ssm_decay'].inner_state.hyperparams['learning_rate'] = np.array(ssm_lr_val, dtype=np.float32)
+        state.opt_state.inner_states['none'].inner_state.hyperparams['learning_rate'] = np.array(ssm_lr_val, dtype=np.float32)
 
     return state, step
 
@@ -184,7 +184,7 @@ def create_train_state(model_cls,
             ssm_fn = map_nested_fn(
                 lambda k, _: "ssm"
                 if k in ["Lambda_re", "Lambda_im", "log_step", "norm"]
-                else ("none" if k in [] else ("ssm_decay" if k in ["B"] else "regular"))
+                else ("none" if k in ["B"] else "regular")
             )
         tx = optax.multi_transform(
             {
