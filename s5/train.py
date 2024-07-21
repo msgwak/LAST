@@ -161,9 +161,17 @@ def train(args):
 
     # Training Loop over epochs
     LAST_history = []
-    val_loss, val_acc, LASTscores = validate(state,
+    if valloader is not None:
+        _, _, LASTscores = validate(state,
+                                            model_cls,
+                                            valloader,
+                                            seq_len,
+                                            in_dim,
+                                            args.batchnorm)
+    else:
+        _, _, LASTscores = validate(state,
                                          model_cls,
-                                         valloader,
+                                         testloader,
                                          seq_len,
                                          in_dim,
                                          args.batchnorm)
@@ -377,7 +385,8 @@ def train(args):
 
         # Trace LAST history
         LAST_history = np.array(LAST_history)
-        initial_LAST = LAST_history[0]
+        initial_global_th = np.sort(np.concatenate(LAST_history[0]))[-total_remaining_dim]
+        second_global_th = np.sort(np.concatenate(LAST_history[1]))[-total_remaining_dim]
         LAST_history = np.transpose(LAST_history, (1,0,2)) # [E, L, (P/2)] -> [L, E, (P/2)]
 
         history_dir = f"results/{args.dataset}/{args.jax_seed}/"
@@ -389,11 +398,16 @@ def train(args):
             initial_last_scores = LAST_history[l, 0, :]  # at epoch 0
             sorted_indices = np.argsort(initial_last_scores)
             color_map = {idx: colors[sorted_indices.tolist().index(idx)] for idx in range(ssm_size)}
-        
             for s in range(ssm_size):
-                ax.plot(LAST_history[l,:,s], label=f'x_{s}', color=color_map[s])
+                if LAST_history[l,-1,s] < global_th:
+                    color = "black"
+                else:
+                    color = color_map[s]
+                ax.plot(LAST_history[l,:,s], label=f'x_{s}', color=color)
 
-            ax.axhline(y=global_th, color="red", lw=2, linestyle='--',zorder=-1)
+            ax.axhline(y=initial_global_th, color="pink", lw=2, linestyle='--',zorder=100)
+            ax.axhline(y=second_global_th, color="magenta", lw=2, linestyle='--',zorder=100)
+            ax.axhline(y=global_th, color="red", lw=2, linestyle='--',zorder=100)
             ax.set_yscale('log')
             ax.set_title(f'Layer {l}')
             ax.set_xlabel('Epoch')
