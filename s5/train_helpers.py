@@ -373,12 +373,12 @@ def validate(state, model, testloader, seq_len, in_dim, batchnorm, step_rescale=
     losses, accuracies, preds = np.array([]), np.array([]), np.array([])
     for batch_idx, batch in enumerate(tqdm(testloader)):
         inputs, labels, integration_timesteps, global_ths = prep_batch(batch, seq_len, in_dim, global_th)
-        loss, acc, pred, LASTscores = eval_step(inputs, labels, integration_timesteps, global_ths, state, model, batchnorm)
+        loss, acc, pred, LASTscore = eval_step(inputs, labels, integration_timesteps, global_ths, state, model, batchnorm)
         losses = np.append(losses, loss)
         accuracies = np.append(accuracies, acc)
 
     aveloss, aveaccu = np.mean(losses), np.mean(accuracies)
-    return aveloss, aveaccu, LASTscores
+    return aveloss, aveaccu, LASTscore
 
 
 @partial(jax.jit, static_argnums=(6, 7))
@@ -432,15 +432,15 @@ def eval_step(batch_inputs,
               batchnorm,
               ):
     if batchnorm:
-        logits, LASTscores = model.apply({"params": state.params, "batch_stats": state.batch_stats},
+        logits, LASTscore = model.apply({"params": state.params, "batch_stats": state.batch_stats},
                              batch_inputs, batch_integration_timesteps, batch_global_th,
                              )
     else:
-        logits, LASTscores = model.apply({"params": state.params},
+        logits, LASTscore = model.apply({"params": state.params},
                              batch_inputs, batch_integration_timesteps, batch_global_th,
                              )
 
     losses = cross_entropy_loss(logits, batch_labels)
     accs = compute_accuracy(logits, batch_labels)
 
-    return losses, accs, logits, LASTscores
+    return losses, accs, logits, LASTscore

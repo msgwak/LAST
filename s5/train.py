@@ -162,20 +162,20 @@ def train(args):
     # Training Loop over epochs
     LAST_history = []
     if valloader is not None:
-        _, _, LASTscores = validate(state,
+        _, _, LASTscore = validate(state,
                                             model_cls,
                                             valloader,
                                             seq_len,
                                             in_dim,
                                             args.batchnorm)
     else:
-        _, _, LASTscores = validate(state,
+        _, _, LASTscore = validate(state,
                                          model_cls,
                                          testloader,
                                          seq_len,
                                          in_dim,
                                          args.batchnorm)
-    LAST_history.append(LASTscores[0])
+    LAST_history.append(LASTscore)
     
     best_loss, best_acc, best_epoch = 100000000, -100000000.0, 0  # This best loss is val_loss
     count, best_val_loss = 0, 100000000  # This line is for early stopping purposes
@@ -216,7 +216,7 @@ def train(args):
 
         if valloader is not None:
             print(f"[*] Running Epoch {epoch + 1} Validation...")
-            val_loss, val_acc, LASTscores = validate(state,
+            val_loss, val_acc, LASTscore = validate(state,
                                          model_cls,
                                          valloader,
                                          seq_len,
@@ -241,7 +241,7 @@ def train(args):
         else:
             # else use test set as validation set (e.g. IMDB)
             print(f"[*] Running Epoch {epoch + 1} Test...")
-            val_loss, val_acc, LASTscores = validate(state,
+            val_loss, val_acc, LASTscore = validate(state,
                                          model_cls,
                                          testloader,
                                          seq_len,
@@ -254,7 +254,7 @@ def train(args):
                 f" Test Accuracy: {val_acc:.4f}"
             )
 
-        LAST_history.append(LASTscores[0])
+        LAST_history.append(LASTscore)
 
         # For early stopping purposes
         if val_loss < best_val_loss:
@@ -365,9 +365,9 @@ def train(args):
 
     # Prune and test
     if args.pruning:
-        LASTscores = np.concatenate(LASTscores[0]) # [B, L, (P/2)] -> [L, (P/2)] same for all batches
+        LASTscore = np.concatenate(LASTscore) # [L, (P/2)] -> [L*(P/2),]
         total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
-        global_th = np.sort(LASTscores)[-total_remaining_dim]
+        global_th = np.sort(LASTscore)[-total_remaining_dim]
 
         print(f"\n=>> Pruning ratio {args.pruning_ratio} % ===")
         print(f"\tAverage remaining state: {total_remaining_dim//args.n_layers:.0f}")
