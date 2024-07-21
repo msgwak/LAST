@@ -118,15 +118,13 @@ def create_train_state(model_cls,
             # For retrieval tasks we have two different sets of "documents"
             dummy_input = (np.ones((2*bsz, seq_len, in_dim)), np.ones(2*bsz))
             integration_timesteps = np.ones((2*bsz, seq_len,))
-            global_th = np.zeros((2*bsz, ))
         else:
             dummy_input = (np.ones((bsz, seq_len, in_dim)), np.ones(bsz))
             integration_timesteps = np.ones((bsz, seq_len,))
-            global_th = np.zeros((bsz, ))
     else:
         dummy_input = np.ones((bsz, seq_len, in_dim))
         integration_timesteps = np.ones((bsz, seq_len, ))
-        global_th = np.zeros((bsz, ))
+    global_th = 0
 
     model = model_cls(training=True)
     init_rng, dropout_rng = jax.random.split(rng, num=2)
@@ -279,14 +277,12 @@ def compute_accuracy(logits, label):
 
 def prep_batch(batch: tuple,
                seq_len: int,
-               in_dim: int,
-               global_th: float) -> Tuple[np.ndarray, np.ndarray, np.array, np.array]:
+               in_dim: int) -> Tuple[np.ndarray, np.ndarray, np.array]:
     """
     Take a batch and convert it to a standard x/y format.
     :param batch:       (x, y, aux_data) as returned from dataloader.
     :param seq_len:     (int) length of sequence.
     :param in_dim:      (int) dimension of input.
-    :param global_th:   (float) global threshold for pruning.
     :return:
     """
     if len(batch) == 2:
@@ -331,9 +327,7 @@ def prep_batch(batch: tuple,
     else:
         integration_timesteps = np.ones((len(inputs), seq_len))
 
-    global_ths = global_th * np.ones((len(inputs), ))
-
-    return full_inputs, targets.astype(float), integration_timesteps, global_ths
+    return full_inputs, targets.astype(float), integration_timesteps
 
 
 def train_epoch(state, rng, model, trainloader, seq_len, in_dim, batchnorm, lr_params):
@@ -345,9 +339,10 @@ def train_epoch(state, rng, model, trainloader, seq_len, in_dim, batchnorm, lr_p
     batch_losses = []
 
     decay_function, ssm_lr, lr, step, end_step, opt_config, lr_min = lr_params
+    global_th = 0
 
     for batch_idx, batch in enumerate(tqdm(trainloader)):
-        inputs, labels, integration_times, global_ths = prep_batch(batch, seq_len, in_dim, global_th=0)
+        inputs, labels, integration_times = prep_batch(batch, seq_len, in_dim)
         rng, drop_rng = jax.random.split(rng)
         state, loss = train_step(
             state,
@@ -355,7 +350,7 @@ def train_epoch(state, rng, model, trainloader, seq_len, in_dim, batchnorm, lr_p
             inputs,
             labels,
             integration_times,
-            global_ths,
+            global_th,
             model,
             batchnorm,
         )
@@ -372,8 +367,8 @@ def validate(state, model, testloader, seq_len, in_dim, batchnorm, step_rescale=
     model = model(training=False, step_rescale=step_rescale)
     losses, accuracies, preds = np.array([]), np.array([]), np.array([])
     for batch_idx, batch in enumerate(tqdm(testloader)):
-        inputs, labels, integration_timesteps, global_ths = prep_batch(batch, seq_len, in_dim, global_th)
-        loss, acc, pred, LASTscore = eval_step(inputs, labels, integration_timesteps, global_ths, state, model, batchnorm)
+        inputs, labels, integration_timesteps = prep_batch(batch, seq_len, in_dim)
+        loss, acc, pred, LASTscore = eval_step(inputs, labels, integration_timesteps, global_th, state, model, batchnorm)
         losses = np.append(losses, loss)
         accuracies = np.append(accuracies, acc)
 
@@ -387,7 +382,7 @@ def train_step(state,
                batch_inputs,
                batch_labels,
                batch_integration_timesteps,
-               batch_ths,
+               global_th,
                model,
                batchnorm,
                ):
@@ -397,14 +392,14 @@ def train_step(state,
         if batchnorm:
             (logits, _), mod_vars = model.apply(
                 {"params": params, "batch_stats": state.batch_stats},
-                batch_inputs, batch_integration_timesteps, batch_ths,
+                batch_inputs, batch_integration_timesteps, global_th,
                 rngs={"dropout": rng},
                 mutable=["intermediates", "batch_stats"],
             )
         else:
             (logits, _), mod_vars = model.apply(
                 {"params": params},
-                batch_inputs, batch_integration_timesteps, batch_ths,
+                batch_inputs, batch_integration_timesteps, global_th,
                 rngs={"dropout": rng},
                 mutable=["intermediates"],
             )
@@ -426,18 +421,18 @@ def train_step(state,
 def eval_step(batch_inputs,
               batch_labels,
               batch_integration_timesteps,
-              batch_global_th,
+              global_th,
               state,
               model,
               batchnorm,
               ):
     if batchnorm:
         logits, LASTscore = model.apply({"params": state.params, "batch_stats": state.batch_stats},
-                             batch_inputs, batch_integration_timesteps, batch_global_th,
+                             batch_inputs, batch_integration_timesteps, global_th,
                              )
     else:
         logits, LASTscore = model.apply({"params": state.params},
-                             batch_inputs, batch_integration_timesteps, batch_global_th,
+                             batch_inputs, batch_integration_timesteps, global_th,
                              )
 
     losses = cross_entropy_loss(logits, batch_labels)

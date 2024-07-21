@@ -403,7 +403,7 @@ def train(args):
                     color = "black"
                 else:
                     color = color_map[s]
-                ax.plot(LAST_history[l,:,s], label=f'x_{s}', color=color)
+                ax.plot(np.arange(args.epochs+1), LAST_history[l,:,s], label=f'x_{s}', color=color)
 
             ax.axhline(y=initial_global_th, color="pink", lw=2, linestyle='--',zorder=100)
             ax.axhline(y=second_global_th, color="magenta", lw=2, linestyle='--',zorder=100)
@@ -412,6 +412,7 @@ def train(args):
             ax.set_title(f'Layer {l}')
             ax.set_xlabel('Epoch')
             ax.set_ylabel('LAST score')
+            ax.set_xticks(np.arange(args.epochs + 1))
         # handles, labels = ax.get_legend_handles_labels()
         # fig.legend(handles, labels, loc='lower center', ncol=12)
         # plt.tight_layout(rect=[0, 0.15, 1, 1])
