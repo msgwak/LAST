@@ -265,7 +265,7 @@ class RetrievalModel(nn.Module):
         BatchEncoderModel = nn.vmap(
             StackedEncoderModel,
             in_axes=(0, 0, 0),
-            out_axes=0,
+            out_axes=(0, 0),
             variable_axes={"params": None, "dropout": None, 'batch_stats': None, "cache": 0, "prime": None},
             split_rngs={"params": False, "dropout": True}, axis_name='batch'
         )
@@ -308,9 +308,9 @@ class RetrievalModel(nn.Module):
             output (float32): (d_output)
         """
         x, lengths = input  # x is 2*bsz*seq_len*in_dim, lengths is: (2*bsz,)
-        x = self.encoder(x, integration_timesteps, global_ths)  # The output is: 2*bszxseq_lenxd_model
+        x, LASTscores = self.encoder(x, integration_timesteps, global_ths)  # The output is: 2*bszxseq_lenxd_model
         outs = batch_masked_meanpool(x, lengths)  # Avg non-padded values: 2*bszxd_model
         outs0, outs1 = np.split(outs, 2)  # each encoded_i is bszxd_model
         features = np.concatenate([outs0, outs1, outs0-outs1, outs0*outs1], axis=-1)  # bszx4*d_model
         out = self.decoder(features)
-        return nn.log_softmax(out, axis=-1)
+        return nn.log_softmax(out, axis=-1), LASTscores
