@@ -1,4 +1,4 @@
-python run_train.py --pruning=True --pruning_ratio=30 \
+python run_train.py --pruning=True --pruning_ratio=50 \
                     --C_init=trunc_standard_normal --batchnorm=True --bidirectional=True \
                     --blocks=16 --bsz=32 --d_model=128 --dataset=aan-classification \
                     --dt_global=True --epochs=5 --jax_seed=5464368 --lr_factor=2 --n_layers=6 \
