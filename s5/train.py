@@ -13,6 +13,7 @@ from .ssm_init import make_DPLR_HiPPO
 
 import os
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
 def train(args):
     """
@@ -354,25 +355,6 @@ def train(args):
         if count > args.early_stop_patience:
             break
 
-    # Trace LAST history
-    LAST_history = np.array(LAST_history)
-    LAST_history = np.transpose(LAST_history, (1,0,2)) # [E, L, (P/2)] -> [L, E, (P/2)]
-
-    history_dir = f"results/{args.dataset}/{args.jax_seed}/"
-    os.makedirs(history_dir, exist_ok=True)
-    fig, axes = plt.subplots(nrows=(args.n_layers+1)//2, ncols=2, figsize=(12, 8))
-    for l in range(args.n_layers):
-        ax = axes[l // 2, l % 2]
-        for s in range(ssm_size):
-            ax.plot(LAST_history[l,:,s], label=f'x_{s}')
-        ax.set_title(f'Layer {l}')
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('LAST score')
-    handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', ncol=15)
-    plt.tight_layout(rect=[0, 0.04, 1, 1])
-    plt.savefig(f'{history_dir}/last_history.png')
-
     # Prune and test
     if args.pruning:
         LASTscores = np.concatenate(LASTscores[0]) # [B, L, (P/2)] -> [L, (P/2)] same for all batches
@@ -392,3 +374,32 @@ def train(args):
                                         global_th=global_th)
 
         print(f"\tTest Accuracy: {test_acc:.4f}")
+
+        # Trace LAST history
+        LAST_history = np.array(LAST_history)
+        initial_LAST = LAST_history[0]
+        LAST_history = np.transpose(LAST_history, (1,0,2)) # [E, L, (P/2)] -> [L, E, (P/2)]
+
+        history_dir = f"results/{args.dataset}/{args.jax_seed}/"
+        os.makedirs(history_dir, exist_ok=True)
+        colors = cm.viridis(np.linspace(0, 1, ssm_size))  
+        fig, axes = plt.subplots(nrows=(args.n_layers+1)//2, ncols=2, figsize=(12, 8))
+        for l in range(args.n_layers):
+            ax = axes[l // 2, l % 2]
+            initial_last_scores = LAST_history[l, 0, :]  # at epoch 0
+            sorted_indices = np.argsort(initial_last_scores)
+            color_map = {idx: colors[sorted_indices.tolist().index(idx)] for idx in range(ssm_size)}
+        
+            for s in range(ssm_size):
+                ax.plot(LAST_history[l,:,s], label=f'x_{s}', color=color_map[s])
+
+            ax.axhline(y=global_th, color="red", lw=2, linestyle='--',zorder=-1)
+            ax.set_yscale('log')
+            ax.set_title(f'Layer {l}')
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('LAST score')
+        # handles, labels = ax.get_legend_handles_labels()
+        # fig.legend(handles, labels, loc='lower center', ncol=12)
+        # plt.tight_layout(rect=[0, 0.15, 1, 1])
+        plt.tight_layout()
+        plt.savefig(f'{history_dir}/last_history.png')
