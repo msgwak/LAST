@@ -270,7 +270,10 @@ class S5SSM(nn.Module):
 
         # Add feedthrough matrix output Du;
         Du = jax.vmap(lambda u: self.D * u)(input_sequence)
-        return ys + Du, self.LASTscore
+        if self.pruning:
+            return ys + Du, self.LASTscore
+        else:
+            return ys + Du
 
 
 def init_S5SSM(H,
