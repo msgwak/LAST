@@ -157,7 +157,7 @@ def create_train_state(model_cls,
             ssm_fn = map_nested_fn(
                 lambda k, _: "ssm"
                 if k in ["B", "Lambda_re", "Lambda_im", "log_step", "norm"]
-                else ("none" if k in ["LASTscore"] else "regular")
+                else ("none" if k in [] else "regular")
             )
         tx = optax.multi_transform(
             {
@@ -184,7 +184,7 @@ def create_train_state(model_cls,
             ssm_fn = map_nested_fn(
                 lambda k, _: "ssm"
                 if k in ["Lambda_re", "Lambda_im", "log_step", "norm"]
-                else ("none" if k in ["LASTscore"] else ("ssm_decay" if k in ["B"] else "regular"))
+                else ("none" if k in [] else ("ssm_decay" if k in ["B"] else "regular"))
             )
         tx = optax.multi_transform(
             {
@@ -206,7 +206,7 @@ def create_train_state(model_cls,
             ssm_fn = map_nested_fn(
                 lambda k, _: "ssm"
                 if k in ["Lambda_re", "Lambda_im", "norm"]
-                else ("none" if k in ["LASTscore"] else "regular")
+                else ("none" if k in [] else "regular")
             )
         else:
             ssm_fn = map_nested_fn(
@@ -234,7 +234,7 @@ def create_train_state(model_cls,
                 lambda k, _: "ssm"
                 if k in ["B", "C", "C1", "C2", "D",
                          "Lambda_re", "Lambda_im", "norm"]
-                else ("none" if k in ["LASTscore"] else "regular")
+                else ("none" if k in [] else "regular")
             )
         else:
             ssm_fn = map_nested_fn(
@@ -254,7 +254,7 @@ def create_train_state(model_cls,
         )
 
     fn_is_complex = lambda x: x.dtype in [np.complex64, np.complex128]
-    param_sizes = map_nested_fn(lambda k, param: 0 if k == "LASTscore" else param.size * (2 if fn_is_complex(param) else 1))(params)
+    param_sizes = map_nested_fn(lambda k, param: param.size * (2 if fn_is_complex(param) else 1))(params)
     print(f"[*] Trainable Parameters: {sum(jax.tree_util.tree_leaves(param_sizes))}")
 
     if batchnorm:
