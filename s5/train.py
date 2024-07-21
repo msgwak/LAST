@@ -11,6 +11,8 @@ from .seq_model import BatchClassificationModel, RetrievalModel
 from .ssm import init_S5SSM
 from .ssm_init import make_DPLR_HiPPO
 
+import os
+import matplotlib.pyplot as plt
 
 def train(args):
     """
@@ -157,6 +159,15 @@ def train(args):
                                dt_global=args.dt_global)
 
     # Training Loop over epochs
+    LAST_history = []
+    val_loss, val_acc, LASTscores = validate(state,
+                                         model_cls,
+                                         valloader,
+                                         seq_len,
+                                         in_dim,
+                                         args.batchnorm)
+    LAST_history.append(LASTscores[0])
+    
     best_loss, best_acc, best_epoch = 100000000, -100000000.0, 0  # This best loss is val_loss
     count, best_val_loss = 0, 100000000  # This line is for early stopping purposes
     lr_count, opt_acc = 0, -100000000.0  # This line is for learning rate decay
@@ -204,7 +215,7 @@ def train(args):
                                          args.batchnorm)
 
             print(f"[*] Running Epoch {epoch + 1} Test...")
-            test_loss, test_acc, LASTscores = validate(state,
+            test_loss, test_acc, _ = validate(state,
                                            model_cls,
                                            testloader,
                                            seq_len,
@@ -233,6 +244,8 @@ def train(args):
                 f"\tTrain Loss: {train_loss:.5f}  --Test Loss: {val_loss:.5f} --"
                 f" Test Accuracy: {val_acc:.4f}"
             )
+
+        LAST_history.append(LASTscores[0])
 
         # For early stopping purposes
         if val_loss < best_val_loss:
@@ -341,9 +354,28 @@ def train(args):
         if count > args.early_stop_patience:
             break
 
+    # Trace LAST history
+    LAST_history = np.array(LAST_history)
+    LAST_history = np.transpose(LAST_history, (1,0,2)) # [E, L, (P/2)] -> [L, E, (P/2)]
+
+    history_dir = f"results/{args.dataset}/{args.jax_seed}/"
+    os.makedirs(history_dir, exist_ok=True)
+    fig, axes = plt.subplots(nrows=(args.n_layers+1)//2, ncols=2, figsize=(12, 8))
+    for l in range(args.n_layers):
+        ax = axes[l // 2, l % 2]
+        for s in range(ssm_size):
+            ax.plot(LAST_history[l,:,s], label=f'x_{s}')
+        ax.set_title(f'Layer {l}')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('LAST score')
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', ncol=15)
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    plt.savefig(f'{history_dir}/last_history.png')
+
     # Prune and test
     if args.pruning:
-        LASTscores = LASTscores[0]
+        LASTscores = np.concatenate(LASTscores[0]) # [B, L, (P/2)] -> [L, (P/2)] same for all batches
         total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
         global_th = np.sort(LASTscores)[-total_remaining_dim]
 

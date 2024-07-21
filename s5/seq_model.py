@@ -66,7 +66,7 @@ class StackedEncoderModel(nn.Module):
         for layer in self.layers:
             x, LASTscore = layer(x, global_ths)
             LASTscores.append(LASTscore)
-        return x, np.concatenate(LASTscores)
+        return x, np.array(LASTscores)
 
 
 def masked_meanpool(x, lengths):
