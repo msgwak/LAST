@@ -239,7 +239,7 @@ class S5SSM(nn.Module):
             self.LASTscore = Hinfscore.at[order].set(LASTscore)
 
 
-    def __call__(self, input_sequence, global_th):
+    def __call__(self, input_sequence, global_th, LASTscore=None):
         """
         Compute the LxH output of the S5 SSM given an LxH input sequence
         using a parallel scan.
@@ -249,9 +249,11 @@ class S5SSM(nn.Module):
         Returns:
             output sequence (float32): (L, H)
         """
+        if LASTscore is None:
+            LASTscore = self.LASTscore
 
         if self.pruning:
-            mask = self.LASTscore >= global_th
+            mask = LASTscore >= global_th
 
             c_mask = np.tile(mask, 2) if self.bidirectional else mask
             ys = apply_ssm(mask * self.Lambda_bar,

@@ -52,19 +52,19 @@ class SequenceLayer(nn.Module):
             deterministic=not self.training,
         )
 
-    def __call__(self, x, th):
+    def __call__(self, x, th, mask):
         """
         Compute the LxH output of S5 layer given an LxH input.
         Args:
              x (float32): input sequence (L, d_model)
-             th (float32): global threshold (P, )
+             th (float32): global threshold 
         Returns:
             output sequence (float32): (L, d_model)
         """
         skip = x
         if self.prenorm:
             x = self.norm(x)
-        x, LASTscore = self.seq(x, th)
+        x, LASTscore = self.seq(x, th, mask)
 
         if self.activation in ["full_glu"]:
             x = self.drop(nn.gelu(x))

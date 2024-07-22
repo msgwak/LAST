@@ -52,7 +52,7 @@ class StackedEncoderModel(nn.Module):
             for _ in range(self.n_layers)
         ]
 
-    def __call__(self, x, integration_timesteps, global_th):
+    def __call__(self, x, integration_timesteps, global_th, LASTscore):
         """
         Compute the LxH output of the stacked encoder given an Lxd_input
         input sequence.
@@ -63,8 +63,8 @@ class StackedEncoderModel(nn.Module):
         """
         LASTscores = []
         x = self.encoder(x)
-        for layer in self.layers:
-            x, LASTscore = layer(x, global_th)
+        for i, layer in enumerate(self.layers):
+            x, LASTscore = layer(x, global_th, LASTscore[i])
             LASTscores.append(LASTscore)
         return x, np.array(LASTscores)
 
@@ -144,7 +144,7 @@ class ClassificationModel(nn.Module):
                                         )
         self.decoder = nn.Dense(self.d_output)
 
-    def __call__(self, x, integration_timesteps, global_th):
+    def __call__(self, x, integration_timesteps, global_th, LASTscore):
         """
         Compute the size d_output log softmax output given a
         Lxd_input input sequence.
@@ -156,7 +156,7 @@ class ClassificationModel(nn.Module):
         if self.padded:
             x, length = x  # input consists of data and prepadded seq lens
 
-        x, LASTscores = self.encoder(x, integration_timesteps, global_th)
+        x, LASTscores = self.encoder(x, integration_timesteps, global_th, LASTscore)
         if self.mode in ["pool"]:
             # Perform mean pooling across time
             if self.padded:
@@ -180,7 +180,7 @@ class ClassificationModel(nn.Module):
 # Here we call vmap to parallelize across a batch of input sequences
 BatchClassificationModel = nn.vmap(
     ClassificationModel,
-    in_axes=(0, 0, None),
+    in_axes=(0, 0, None, None),
     out_axes=(0, None),
     variable_axes={"params": None, "dropout": None, 'batch_stats': None, "cache": 0, "prime": None},
     split_rngs={"params": False, "dropout": True}, axis_name='batch')
@@ -264,7 +264,7 @@ class RetrievalModel(nn.Module):
         """
         BatchEncoderModel = nn.vmap(
             StackedEncoderModel,
-            in_axes=(0, 0, None),
+            in_axes=(0, 0, None, None),
             out_axes=(0, None),
             variable_axes={"params": None, "dropout": None, 'batch_stats': None, "cache": 0, "prime": None},
             split_rngs={"params": False, "dropout": True}, axis_name='batch'
@@ -295,7 +295,7 @@ class RetrievalModel(nn.Module):
                                 d_output=self.d_output
                                           )
 
-    def __call__(self, input, integration_timesteps, global_th):  # input is a tuple of x and lengths
+    def __call__(self, input, integration_timesteps, global_th, LASTscore):  # input is a tuple of x and lengths
         """
         Compute the size d_output log softmax output given a
         Lxd_input input sequence. The encoded features are constructed as in
@@ -308,7 +308,7 @@ class RetrievalModel(nn.Module):
             output (float32): (d_output)
         """
         x, lengths = input  # x is 2*bsz*seq_len*in_dim, lengths is: (2*bsz,)
-        x, LASTscores = self.encoder(x, integration_timesteps, global_th)  # The output is: 2*bszxseq_lenxd_model
+        x, LASTscores = self.encoder(x, integration_timesteps, global_th, LASTscore)  # The output is: 2*bszxseq_lenxd_model
         outs = batch_masked_meanpool(x, lengths)  # Avg non-padded values: 2*bszxd_model
         outs0, outs1 = np.split(outs, 2)  # each encoded_i is bszxd_model
         features = np.concatenate([outs0, outs1, outs0-outs1, outs0*outs1], axis=-1)  # bszx4*d_model

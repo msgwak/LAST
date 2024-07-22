@@ -163,18 +163,18 @@ def train(args):
     LAST_history = []
     if valloader is not None:
         _, _, LASTscore = validate(state,
-                                            model_cls,
-                                            valloader,
-                                            seq_len,
-                                            in_dim,
-                                            args.batchnorm)
+                                    model_cls,
+                                    valloader,
+                                    seq_len,
+                                    in_dim,
+                                    args.batchnorm)
     else:
         _, _, LASTscore = validate(state,
-                                         model_cls,
-                                         testloader,
-                                         seq_len,
-                                         in_dim,
-                                         args.batchnorm)
+                                    model_cls,
+                                    testloader,
+                                    seq_len,
+                                    in_dim,
+                                    args.batchnorm)
     LAST_history.append(LASTscore)
     
     best_loss, best_acc, best_epoch = 100000000, -100000000.0, 0  # This best loss is val_loss
@@ -365,9 +365,8 @@ def train(args):
 
     # Prune and test
     if args.pruning:
-        LASTscore = np.concatenate(LASTscore) # [L, (P/2)] -> [L*(P/2),]
         total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
-        global_th = np.sort(LASTscore)[-total_remaining_dim]
+        global_th = np.sort(LASTscore.reshape(-1))[-total_remaining_dim]
 
         print(f"\n=>> Pruning ratio {args.pruning_ratio} % ===")
         print(f"\tAverage remaining state: {total_remaining_dim//args.n_layers:.0f}")
@@ -379,7 +378,8 @@ def train(args):
                                         seq_len,
                                         in_dim,
                                         args.batchnorm,
-                                        global_th=global_th)
+                                        global_th=global_th,
+                                        LASTscore=LASTscore)
 
         print(f"\tTest Accuracy: {test_acc:.4f}")
 
@@ -413,8 +413,5 @@ def train(args):
             ax.set_xlabel('Epoch')
             ax.set_ylabel('LAST score')
             ax.set_xticks(np.arange(args.epochs + 1))
-        # handles, labels = ax.get_legend_handles_labels()
-        # fig.legend(handles, labels, loc='lower center', ncol=12)
-        # plt.tight_layout(rect=[0, 0.15, 1, 1])
         plt.tight_layout()
         plt.savefig(f'{history_dir}/last_history.png')
