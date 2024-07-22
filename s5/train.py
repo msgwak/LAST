@@ -144,309 +144,354 @@ def train(args):
             bn_momentum=args.bn_momentum,
         )
 
-    # initialize training state
-    state = create_train_state(model_cls,
-                               init_rng,
-                               padded,
-                               retrieval,
-                               in_dim=in_dim,
-                               bsz=args.bsz,
-                               seq_len=seq_len,
-                               weight_decay=args.weight_decay,
-                               batchnorm=args.batchnorm,
-                               opt_config=args.opt_config,
-                               ssm_lr=ssm_lr,
-                               lr=lr,
-                               dt_global=args.dt_global)
-
-    # Training Loop over epochs
-
-    global_th = 0
-    LASTscore_formask = [None for _ in range(args.n_layers)]
-    LAST_history = []
-    if valloader is not None:
-        _, _, LASTscore = validate(state,
-                                    model_cls,
-                                    valloader,
-                                    seq_len,
-                                    in_dim,
-                                    args.batchnorm)
-    else:
-        _, _, LASTscore = validate(state,
-                                    model_cls,
-                                    testloader,
-                                    seq_len,
-                                    in_dim,
-                                    args.batchnorm)
-    LAST_history.append(LASTscore)
-    
-    best_loss, best_acc, best_epoch = 100000000, -100000000.0, 0  # This best loss is val_loss
-    count, best_val_loss = 0, 100000000  # This line is for early stopping purposes
-    lr_count, opt_acc = 0, -100000000.0  # This line is for learning rate decay
-    step = 0  # for per step learning rate decay
-    steps_per_epoch = int(train_size/args.bsz)
-    for epoch in range(args.epochs):
-        if epoch > args.pruning_epoch:
-            print(f"[*] Starting Training Epoch {epoch + 1} with Pruned Model...")
+    if args.pruning:
+        total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
+        history_dir = f"results/{args.dataset}/{args.jax_seed}/"
+        os.makedirs(history_dir, exist_ok=True)
+        history_fname = f"{history_dir}/eps_{args.epochs}_pruning_ep_{args.pruning_epoch}_history.npz"
+        if os.path.isfile(history_fname):
+            npzfile = np.load(history_fname)
+            LAST_history = npzfile['LAST']
+            Test_acc_history = npzfile['Test_acc']
+            global_th = np.sort(np.concatenate(LAST_history[args.pruning_epoch+1]))[-total_remaining_dim]
+        
         else:
-            print(f"[*] Starting Training Epoch {epoch + 1}...")
+            # initialize training state
+            state = create_train_state(model_cls,
+                                    init_rng,
+                                    padded,
+                                    retrieval,
+                                    in_dim=in_dim,
+                                    bsz=args.bsz,
+                                    seq_len=seq_len,
+                                    weight_decay=args.weight_decay,
+                                    batchnorm=args.batchnorm,
+                                    opt_config=args.opt_config,
+                                    ssm_lr=ssm_lr,
+                                    lr=lr,
+                                    dt_global=args.dt_global)
 
-        if epoch < args.warmup_end:
-            print("using linear warmup for epoch {}".format(epoch+1))
-            decay_function = linear_warmup
-            end_step = steps_per_epoch * args.warmup_end
+            # Training Loop over epochs
 
-        elif args.cosine_anneal:
-            print("using cosine annealing for epoch {}".format(epoch+1))
-            decay_function = cosine_annealing
-            # for per step learning rate decay
-            end_step = steps_per_epoch * args.epochs - (steps_per_epoch * args.warmup_end)
-        else:
-            print("using constant lr for epoch {}".format(epoch+1))
-            decay_function = constant_lr
-            end_step = None
-
-        # TODO: Switch to letting Optax handle this.
-        #  Passing this around to manually handle per step learning rate decay.
-        lr_params = (decay_function, ssm_lr, lr, step, end_step, args.opt_config, args.lr_min)
-
-        train_rng, skey = random.split(train_rng)
-        state, train_loss, step = train_epoch(state,
-                                              skey,
-                                              model_cls,
-                                              trainloader,
-                                              seq_len,
-                                              in_dim,
-                                              args.batchnorm,
-                                              lr_params,
-                                              global_th=global_th,
-                                              LASTscore=LASTscore_formask)
-
-        if valloader is not None:
-            print(f"[*] Running Epoch {epoch + 1} Validation...")
-            val_loss, val_acc, LASTscore = validate(state,
-                                         model_cls,
-                                         valloader,
-                                         seq_len,
-                                         in_dim,
-                                         args.batchnorm,
-                                         global_th=global_th,
-                                         LASTscore=LASTscore_formask)
-
-            print(f"[*] Running Epoch {epoch + 1} Test...")
-            test_loss, test_acc, _ = validate(state,
-                                           model_cls,
-                                           testloader,
-                                           seq_len,
-                                           in_dim,
-                                           args.batchnorm,
-                                           global_th=global_th,
-                                           LASTscore=LASTscore_formask)
-
-            print(f"\n=>> Epoch {epoch + 1} Metrics ===")
-            print(
-                f"\tTrain Loss: {train_loss:.5f} -- Val Loss: {val_loss:.5f} --Test Loss: {test_loss:.5f} --"
-                f" Val Accuracy: {val_acc:.4f}"
-                f" Test Accuracy: {test_acc:.4f}"
-            )
-
-        else:
-            # else use test set as validation set (e.g. IMDB)
-            print(f"[*] Running Epoch {epoch + 1} Test...")
-            val_loss, val_acc, LASTscore = validate(state,
-                                         model_cls,
-                                         testloader,
-                                         seq_len,
-                                         in_dim,
-                                         args.batchnorm,
-                                         global_th=global_th,
-                                         LASTscore=LASTscore_formask)
-
-            print(f"\n=>> Epoch {epoch + 1} Metrics ===")
-            print(
-                f"\tTrain Loss: {train_loss:.5f}  --Test Loss: {val_loss:.5f} --"
-                f" Test Accuracy: {val_acc:.4f}"
-            )
-
-        LAST_history.append(LASTscore)
-        if (epoch + 1) == args.pruning_epoch:
-            print(f"\n=>> Epoch {epoch + 1} Pruning ===")
-            total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
-            global_th = np.sort(LASTscore.reshape(-1))[-total_remaining_dim]
-            LASTscore_formask = LASTscore
-            print(f"Global threshold for LAST scores (Pruning ratio: {args.pruning_ratio}%): {global_th:.5f}")
-            
-            print(f"[*] Evaluating pruning...")
-            test_loss, test_acc, _ = validate(state,
+            global_th = 0
+            LASTscore_formask = [None for _ in range(args.n_layers)]
+            LAST_history = []
+            Test_acc_history = []
+            if valloader is not None:
+                _, _, LASTscore = validate(state,
                                             model_cls,
-                                            testloader,
+                                            valloader,
                                             seq_len,
                                             in_dim,
                                             args.batchnorm,
                                             global_th=global_th,
-                                            LASTscore=LASTscore)
-
-            print(f"\tTest Accuracy: {test_acc:.4f}")
-
-
-        # For early stopping purposes
-        if val_loss < best_val_loss:
-            count = 0
-            best_val_loss = val_loss
-        else:
-            count += 1
-
-        if val_acc > best_acc:
-            # Increment counters etc.
-            count = 0
-            best_loss, best_acc, best_epoch = val_loss, val_acc, epoch
-            if valloader is not None:
-                best_test_loss, best_test_acc = test_loss, test_acc
+                                            LASTscore=LASTscore_formask)
+                _, test_acc, _ = validate(state,
+                                                model_cls,
+                                                testloader,
+                                                seq_len,
+                                                in_dim,
+                                                args.batchnorm,
+                                                global_th=global_th,
+                                                LASTscore=LASTscore_formask)
+                Test_acc_history.append(test_acc)
             else:
-                best_test_loss, best_test_acc = best_loss, best_acc
+                _, val_acc, LASTscore = validate(state,
+                                            model_cls,
+                                            testloader,
+                                            seq_len,
+                                            in_dim,
+                                            args.batchnorm)
+                Test_acc_history.append(val_acc)
+            LAST_history.append(LASTscore)
+            
+            best_loss, best_acc, best_epoch = 100000000, -100000000.0, 0  # This best loss is val_loss
+            count, best_val_loss = 0, 100000000  # This line is for early stopping purposes
+            lr_count, opt_acc = 0, -100000000.0  # This line is for learning rate decay
+            step = 0  # for per step learning rate decay
+            steps_per_epoch = int(train_size/args.bsz)
+            for epoch in range(args.epochs):
+                if epoch > args.pruning_epoch:
+                    print(f"[*] Starting Training Epoch {epoch + 1} with Pruned Model...")
+                else:
+                    print(f"[*] Starting Training Epoch {epoch + 1}...")
 
-            # Do some validation on improvement.
-            if speech:
-                # Evaluate on resolution 2 val and test sets
-                print(f"[*] Running Epoch {epoch + 1} Res 2 Validation...")
-                val2_loss, val2_acc = validate(state,
-                                               model_cls,
-                                               aux_dataloaders['valloader2'],
-                                               int(seq_len // 2),
-                                               in_dim,
-                                               args.batchnorm,
-                                               step_rescale=2.0,
-                                               global_th=global_th,
-                                               LASTscore=LASTscore_formask)
+                if epoch < args.warmup_end:
+                    print("using linear warmup for epoch {}".format(epoch+1))
+                    decay_function = linear_warmup
+                    end_step = steps_per_epoch * args.warmup_end
 
-                print(f"[*] Running Epoch {epoch + 1} Res 2 Test...")
-                test2_loss, test2_acc = validate(state, model_cls, aux_dataloaders['testloader2'], int(seq_len // 2), in_dim, args.batchnorm, step_rescale=2.0)
-                print(f"\n=>> Epoch {epoch + 1} Res 2 Metrics ===")
+                elif args.cosine_anneal:
+                    print("using cosine annealing for epoch {}".format(epoch+1))
+                    decay_function = cosine_annealing
+                    # for per step learning rate decay
+                    end_step = steps_per_epoch * args.epochs - (steps_per_epoch * args.warmup_end)
+                else:
+                    print("using constant lr for epoch {}".format(epoch+1))
+                    decay_function = constant_lr
+                    end_step = None
+
+                # TODO: Switch to letting Optax handle this.
+                #  Passing this around to manually handle per step learning rate decay.
+                lr_params = (decay_function, ssm_lr, lr, step, end_step, args.opt_config, args.lr_min)
+
+                train_rng, skey = random.split(train_rng)
+                state, train_loss, step = train_epoch(state,
+                                                    skey,
+                                                    model_cls,
+                                                    trainloader,
+                                                    seq_len,
+                                                    in_dim,
+                                                    args.batchnorm,
+                                                    lr_params,
+                                                    global_th=global_th,
+                                                    LASTscore=LASTscore_formask)
+
+                if valloader is not None:
+                    print(f"[*] Running Epoch {epoch + 1} Validation...")
+                    val_loss, val_acc, LASTscore = validate(state,
+                                                model_cls,
+                                                valloader,
+                                                seq_len,
+                                                in_dim,
+                                                args.batchnorm,
+                                                global_th=global_th,
+                                                LASTscore=LASTscore_formask)
+
+                    print(f"[*] Running Epoch {epoch + 1} Test...")
+                    test_loss, test_acc, _ = validate(state,
+                                                model_cls,
+                                                testloader,
+                                                seq_len,
+                                                in_dim,
+                                                args.batchnorm,
+                                                global_th=global_th,
+                                                LASTscore=LASTscore_formask)
+
+                    print(f"\n=>> Epoch {epoch + 1} Metrics ===")
+                    print(
+                        f"\tTrain Loss: {train_loss:.5f} -- Val Loss: {val_loss:.5f} --Test Loss: {test_loss:.5f} --"
+                        f" Val Accuracy: {val_acc:.4f}"
+                        f" Test Accuracy: {test_acc:.4f}"
+                    )
+                    Test_acc_history.append(test_acc)
+
+                else:
+                    # else use test set as validation set (e.g. IMDB)
+                    print(f"[*] Running Epoch {epoch + 1} Test...")
+                    val_loss, val_acc, LASTscore = validate(state,
+                                                model_cls,
+                                                testloader,
+                                                seq_len,
+                                                in_dim,
+                                                args.batchnorm,
+                                                global_th=global_th,
+                                                LASTscore=LASTscore_formask)
+
+                    print(f"\n=>> Epoch {epoch + 1} Metrics ===")
+                    print(
+                        f"\tTrain Loss: {train_loss:.5f}  --Test Loss: {val_loss:.5f} --"
+                        f" Test Accuracy: {val_acc:.4f}"
+                    )
+                    Test_acc_history.append(val_acc)
+
+                LAST_history.append(LASTscore)
+                if (epoch + 1) == args.pruning_epoch:
+                    print(f"\n=>> Epoch {epoch + 1} Pruning ===")
+                    global_th = np.sort(LASTscore.reshape(-1))[-total_remaining_dim]
+                    LASTscore_formask = LASTscore
+                    print(f"Global threshold for LAST scores (Pruning ratio: {args.pruning_ratio}%): {global_th:.5f}")
+                    
+                    print(f"[*] Evaluating pruning...")
+                    test_loss, test_acc, _ = validate(state,
+                                                    model_cls,
+                                                    testloader,
+                                                    seq_len,
+                                                    in_dim,
+                                                    args.batchnorm,
+                                                    global_th=global_th,
+                                                    LASTscore=LASTscore)
+
+                    print(f"\tTest Accuracy: {test_acc:.4f}")
+
+
+                # For early stopping purposes
+                if val_loss < best_val_loss:
+                    count = 0
+                    best_val_loss = val_loss
+                else:
+                    count += 1
+
+                if val_acc > best_acc:
+                    # Increment counters etc.
+                    count = 0
+                    best_loss, best_acc, best_epoch = val_loss, val_acc, epoch
+                    if valloader is not None:
+                        best_test_loss, best_test_acc = test_loss, test_acc
+                    else:
+                        best_test_loss, best_test_acc = best_loss, best_acc
+
+                    # Do some validation on improvement.
+                    if speech:
+                        # Evaluate on resolution 2 val and test sets
+                        print(f"[*] Running Epoch {epoch + 1} Res 2 Validation...")
+                        val2_loss, val2_acc = validate(state,
+                                                    model_cls,
+                                                    aux_dataloaders['valloader2'],
+                                                    int(seq_len // 2),
+                                                    in_dim,
+                                                    args.batchnorm,
+                                                    step_rescale=2.0,
+                                                    global_th=global_th,
+                                                    LASTscore=LASTscore_formask)
+
+                        print(f"[*] Running Epoch {epoch + 1} Res 2 Test...")
+                        test2_loss, test2_acc = validate(state, model_cls, aux_dataloaders['testloader2'], int(seq_len // 2), in_dim, args.batchnorm, step_rescale=2.0)
+                        print(f"\n=>> Epoch {epoch + 1} Res 2 Metrics ===")
+                        print(
+                            f"\tVal2 Loss: {val2_loss:.5f} --Test2 Loss: {test2_loss:.5f} --"
+                            f" Val Accuracy: {val2_acc:.4f}"
+                            f" Test Accuracy: {test2_acc:.4f}"
+                        )
+
+                # For learning rate decay purposes:
+                input = lr, ssm_lr, lr_count, val_acc, opt_acc
+                lr, ssm_lr, lr_count, opt_acc = reduce_lr_on_plateau(input, factor=args.reduce_factor, patience=args.lr_patience, lr_min=args.lr_min)
+
+                # Print best accuracy & loss so far...
                 print(
-                    f"\tVal2 Loss: {val2_loss:.5f} --Test2 Loss: {test2_loss:.5f} --"
-                    f" Val Accuracy: {val2_acc:.4f}"
-                    f" Test Accuracy: {test2_acc:.4f}"
+                    f"\tBest Val Loss: {best_loss:.5f} -- Best Val Accuracy:"
+                    f" {best_acc:.4f} at Epoch {best_epoch + 1}\n"
+                    f"\tBest Test Loss: {best_test_loss:.5f} -- Best Test Accuracy:"
+                    f" {best_test_acc:.4f} at Epoch {best_epoch + 1}\n"
                 )
 
-        # For learning rate decay purposes:
-        input = lr, ssm_lr, lr_count, val_acc, opt_acc
-        lr, ssm_lr, lr_count, opt_acc = reduce_lr_on_plateau(input, factor=args.reduce_factor, patience=args.lr_patience, lr_min=args.lr_min)
+                if valloader is not None:
+                    if speech:
+                        wandb.log(
+                            {
+                                "Training Loss": train_loss,
+                                "Val loss": val_loss,
+                                "Val Accuracy": val_acc,
+                                "Test Loss": test_loss,
+                                "Test Accuracy": test_acc,
+                                "Val2 loss": val2_loss,
+                                "Val2 Accuracy": val2_acc,
+                                "Test2 Loss": test2_loss,
+                                "Test2 Accuracy": test2_acc,
+                                "count": count,
+                                "Learning rate count": lr_count,
+                                "Opt acc": opt_acc,
+                                "lr": state.opt_state.inner_states['regular'].inner_state.hyperparams['learning_rate'],
+                                "ssm_lr": state.opt_state.inner_states['ssm'].inner_state.hyperparams['learning_rate']
+                            }
+                        )
+                    else:
+                        wandb.log(
+                            {
+                                "Training Loss": train_loss,
+                                "Val loss": val_loss,
+                                "Val Accuracy": val_acc,
+                                "Test Loss": test_loss,
+                                "Test Accuracy": test_acc,
+                                "count": count,
+                                "Learning rate count": lr_count,
+                                "Opt acc": opt_acc,
+                                "lr": state.opt_state.inner_states['regular'].inner_state.hyperparams['learning_rate'],
+                                "ssm_lr": state.opt_state.inner_states['ssm'].inner_state.hyperparams['learning_rate']
+                            }
+                        )
 
-        # Print best accuracy & loss so far...
-        print(
-            f"\tBest Val Loss: {best_loss:.5f} -- Best Val Accuracy:"
-            f" {best_acc:.4f} at Epoch {best_epoch + 1}\n"
-            f"\tBest Test Loss: {best_test_loss:.5f} -- Best Test Accuracy:"
-            f" {best_test_acc:.4f} at Epoch {best_epoch + 1}\n"
-        )
+                else:
+                    wandb.log(
+                        {
+                            "Training Loss": train_loss,
+                            "Val loss": val_loss,
+                            "Val Accuracy": val_acc,
+                            "count": count,
+                            "Learning rate count": lr_count,
+                            "Opt acc": opt_acc,
+                            "lr": state.opt_state.inner_states['regular'].inner_state.hyperparams['learning_rate'],
+                            "ssm_lr": state.opt_state.inner_states['ssm'].inner_state.hyperparams['learning_rate']
+                        }
+                    )
+                wandb.run.summary["Best Val Loss"] = best_loss
+                wandb.run.summary["Best Val Accuracy"] = best_acc
+                wandb.run.summary["Best Epoch"] = best_epoch
+                wandb.run.summary["Best Test Loss"] = best_test_loss
+                wandb.run.summary["Best Test Accuracy"] = best_test_acc
 
-        if valloader is not None:
-            if speech:
-                wandb.log(
-                    {
-                        "Training Loss": train_loss,
-                        "Val loss": val_loss,
-                        "Val Accuracy": val_acc,
-                        "Test Loss": test_loss,
-                        "Test Accuracy": test_acc,
-                        "Val2 loss": val2_loss,
-                        "Val2 Accuracy": val2_acc,
-                        "Test2 Loss": test2_loss,
-                        "Test2 Accuracy": test2_acc,
-                        "count": count,
-                        "Learning rate count": lr_count,
-                        "Opt acc": opt_acc,
-                        "lr": state.opt_state.inner_states['regular'].inner_state.hyperparams['learning_rate'],
-                        "ssm_lr": state.opt_state.inner_states['ssm'].inner_state.hyperparams['learning_rate']
-                    }
-                )
-            else:
-                wandb.log(
-                    {
-                        "Training Loss": train_loss,
-                        "Val loss": val_loss,
-                        "Val Accuracy": val_acc,
-                        "Test Loss": test_loss,
-                        "Test Accuracy": test_acc,
-                        "count": count,
-                        "Learning rate count": lr_count,
-                        "Opt acc": opt_acc,
-                        "lr": state.opt_state.inner_states['regular'].inner_state.hyperparams['learning_rate'],
-                        "ssm_lr": state.opt_state.inner_states['ssm'].inner_state.hyperparams['learning_rate']
-                    }
-                )
-
-        else:
-            wandb.log(
-                {
-                    "Training Loss": train_loss,
-                    "Val loss": val_loss,
-                    "Val Accuracy": val_acc,
-                    "count": count,
-                    "Learning rate count": lr_count,
-                    "Opt acc": opt_acc,
-                    "lr": state.opt_state.inner_states['regular'].inner_state.hyperparams['learning_rate'],
-                    "ssm_lr": state.opt_state.inner_states['ssm'].inner_state.hyperparams['learning_rate']
-                }
-            )
-        wandb.run.summary["Best Val Loss"] = best_loss
-        wandb.run.summary["Best Val Accuracy"] = best_acc
-        wandb.run.summary["Best Epoch"] = best_epoch
-        wandb.run.summary["Best Test Loss"] = best_test_loss
-        wandb.run.summary["Best Test Accuracy"] = best_test_acc
-
-        if count > args.early_stop_patience:
-            break
+                if count > args.early_stop_patience:
+                    break
+            Test_acc_history = np.array(Test_acc_history)
+            LAST_history = np.array(LAST_history)
+            np.savez(history_fname, LAST=LAST_history, Test_acc=Test_acc_history)
 
     # Prune and test
     if args.pruning:
-        # total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
-        # global_th = np.sort(LASTscore.reshape(-1))[-total_remaining_dim]
-
-        # print(f"\n=>> Pruning ratio {args.pruning_ratio} % ===")
-        # print(f"\tAverage remaining state: {total_remaining_dim//args.n_layers:.0f}")
-        # print(f"\tGlobal threshold: {global_th:.4f}")
-        # print(f"[*] Evaluating pruning...")
-        # test_loss, test_acc, _ = validate(state,
-        #                                 model_cls,
-        #                                 testloader,
-        #                                 seq_len,
-        #                                 in_dim,
-        #                                 args.batchnorm,
-        #                                 global_th=global_th,
-        #                                 LASTscore=LASTscore)
-
-        # print(f"\tTest Accuracy: {test_acc:.4f}")
-
-        # Trace LAST history
-        LAST_history = np.array(LAST_history)
         initial_global_th = np.sort(np.concatenate(LAST_history[0]))[-total_remaining_dim]
-        second_global_th = np.sort(np.concatenate(LAST_history[1]))[-total_remaining_dim]
         LAST_history = np.transpose(LAST_history, (1,0,2)) # [E, L, (P/2)] -> [L, E, (P/2)]
 
-        history_dir = f"results/{args.dataset}/{args.jax_seed}/"
-        os.makedirs(history_dir, exist_ok=True)
-        colors = cm.viridis(np.linspace(0, 1, ssm_size))  
-        fig, axes = plt.subplots(nrows=(args.n_layers+1)//2, ncols=2, figsize=(12, 8))
+        colors = cm.viridis(np.linspace(0, 1, ssm_size))
+        nrows = 1 + (args.n_layers+1)//2
+        height_ratios = [1.8] + [1 for _ in range(nrows-1)]
+        fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(9, 2+1.3*nrows), gridspec_kw={'height_ratios': height_ratios})
+        
+        xticklabels = [str(i) for i in range(1, args.epochs+1)]
+        xticklabels = ["Init"] + xticklabels
+
+        # (1) Test accuracy history
+        ax = axes[0, 0]
+        ax.plot(np.arange(args.epochs+1), Test_acc_history, color='mediumpurple', lw=2.5, marker='o', markersize=7)
+        ax.axvline(x=args.pruning_epoch, color="olive", lw=2, linestyle='--',zorder=100)
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Test accuracy')
+        ax.yaxis.grid(True, alpha=0.4)
+        ax.set_xticks(np.arange(args.epochs + 1))
+        ax.set_xticklabels(xticklabels)
+        # ax.set_ylim([0.85, 1.0])
+
+        # (2) Profiling history
+        ax_latency = axes[0, 1]
+        ax_memory = ax_latency.twinx()
+        # ------임시----- #
+        line1, = ax_latency.plot(np.arange(args.epochs+1), Test_acc_history, color='sandybrown', lw=2.5, marker='D', markersize=7, label='Latency')
+        line2, = ax_memory.plot(np.arange(args.epochs+1), LAST_history[0, :, 0], color='orchid', lw=2.5, marker='v', markersize=7, label='Memory')
+        # ------임시----- #
+        ax_latency.axvline(x=args.pruning_epoch, color="olive", lw=2, linestyle='--',zorder=100)
+        ax_latency.set_xlabel('Epoch')
+        ax_latency.set_ylabel('Latency (ms)')
+        ax_memory.set_ylabel('Memory usage (MB)')
+        ax_latency.yaxis.grid(True, alpha=0.4)
+        ax_latency.set_xticks(np.arange(args.epochs + 1))
+        ax_latency.set_xticklabels(xticklabels)
+        lines = [line1, line2]
+        labels = [line.get_label() for line in lines]
+        ax_latency.legend(lines, labels, loc='lower right')
+
+        # (3) LAST history
         for l in range(args.n_layers):
-            ax = axes[l // 2, l % 2]
-            initial_last_scores = LAST_history[l, 0, :]  # at epoch 0
+            ax = axes[1+l // 2, l % 2]
+            initial_last_scores = LAST_history[l, 0, :]  # based on the initial value
             sorted_indices = np.argsort(initial_last_scores)
             color_map = {idx: colors[sorted_indices.tolist().index(idx)] for idx in range(ssm_size)}
             for s in range(ssm_size):
-                if LAST_history[l,-1,s] < global_th:
-                    color = "black"
+                if LAST_history[l,args.pruning_epoch,s] < global_th:
+                    ax.plot(np.arange(0, args.pruning_epoch+1), LAST_history[l,:args.pruning_epoch+1,s], color=color_map[s])
+                    ax.plot(np.arange(args.pruning_epoch, args.epochs+1), LAST_history[l,args.pruning_epoch:,s], color="silver")
                 else:
-                    color = color_map[s]
-                ax.plot(np.arange(args.epochs+1), LAST_history[l,:,s], label=f'x_{s}', color=color)
+                    ax.plot(np.arange(args.epochs+1), LAST_history[l,:,s], color=color_map[s])
 
-            ax.axhline(y=initial_global_th, color="pink", lw=2, linestyle='--',zorder=100)
-            ax.axhline(y=second_global_th, color="magenta", lw=2, linestyle='--',zorder=100)
-            ax.axhline(y=global_th, color="red", lw=2, linestyle='--',zorder=100)
+            # current pruning
+            # ax.axhline(y=global_th, color="olive", lw=2, linestyle='--',zorder=100)
+            ax.axvline(x=args.pruning_epoch, color="olive", lw=2, linestyle='--',zorder=100)
             ax.set_yscale('log')
-            ax.set_title(f'Layer {l}')
+            ax.set_title(f'Layer {l+1}')
             ax.set_xlabel('Epoch')
             ax.set_ylabel('LAST score')
+
             ax.set_xticks(np.arange(args.epochs + 1))
+            ax.set_xticklabels(xticklabels)
+
         plt.tight_layout()
         plt.savefig(f'{history_dir}/last_history.png')
