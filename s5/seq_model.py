@@ -52,7 +52,7 @@ class StackedEncoderModel(nn.Module):
             for _ in range(self.n_layers)
         ]
 
-    def __call__(self, x, integration_timesteps, global_th, LASTscore):
+    def __call__(self, x, integration_timesteps, global_th, LASTscore_formask):
         """
         Compute the LxH output of the stacked encoder given an Lxd_input
         input sequence.
@@ -64,7 +64,7 @@ class StackedEncoderModel(nn.Module):
         LASTscores = []
         x = self.encoder(x)
         for i, layer in enumerate(self.layers):
-            x, LASTscore = layer(x, global_th, LASTscore[i])
+            x, LASTscore = layer(x, global_th, LASTscore_formask[i])
             LASTscores.append(LASTscore)
         return x, np.array(LASTscores)
 

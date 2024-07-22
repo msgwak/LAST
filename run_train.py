@@ -9,6 +9,8 @@ if __name__ == "__main__":
 
 	parser.add_argument("--pruning", type=str2bool, default=False,
 						help="Test pruning?")
+	parser.add_argument("--pruning_epoch", type=int, default=5,
+						help="When to prune states")
 	parser.add_argument("--pruning_ratio", type=int, default=30,
 						help="Desired model-level pruning ratio")
 	parser.add_argument("--USE_WANDB", type=str2bool, default=False,

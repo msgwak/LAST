@@ -160,6 +160,9 @@ def train(args):
                                dt_global=args.dt_global)
 
     # Training Loop over epochs
+
+    global_th = 0
+    LASTscore_formask = [None for _ in range(args.n_layers)]
     LAST_history = []
     if valloader is not None:
         _, _, LASTscore = validate(state,
@@ -183,7 +186,10 @@ def train(args):
     step = 0  # for per step learning rate decay
     steps_per_epoch = int(train_size/args.bsz)
     for epoch in range(args.epochs):
-        print(f"[*] Starting Training Epoch {epoch + 1}...")
+        if epoch > args.pruning_epoch:
+            print(f"[*] Starting Training Epoch {epoch + 1} with Pruned Model...")
+        else:
+            print(f"[*] Starting Training Epoch {epoch + 1}...")
 
         if epoch < args.warmup_end:
             print("using linear warmup for epoch {}".format(epoch+1))
@@ -212,7 +218,9 @@ def train(args):
                                               seq_len,
                                               in_dim,
                                               args.batchnorm,
-                                              lr_params)
+                                              lr_params,
+                                              global_th=global_th,
+                                              LASTscore=LASTscore_formask)
 
         if valloader is not None:
             print(f"[*] Running Epoch {epoch + 1} Validation...")
@@ -221,7 +229,9 @@ def train(args):
                                          valloader,
                                          seq_len,
                                          in_dim,
-                                         args.batchnorm)
+                                         args.batchnorm,
+                                         global_th=global_th,
+                                         LASTscore=LASTscore_formask)
 
             print(f"[*] Running Epoch {epoch + 1} Test...")
             test_loss, test_acc, _ = validate(state,
@@ -229,7 +239,9 @@ def train(args):
                                            testloader,
                                            seq_len,
                                            in_dim,
-                                           args.batchnorm)
+                                           args.batchnorm,
+                                           global_th=global_th,
+                                           LASTscore=LASTscore_formask)
 
             print(f"\n=>> Epoch {epoch + 1} Metrics ===")
             print(
@@ -246,7 +258,9 @@ def train(args):
                                          testloader,
                                          seq_len,
                                          in_dim,
-                                         args.batchnorm)
+                                         args.batchnorm,
+                                         global_th=global_th,
+                                         LASTscore=LASTscore_formask)
 
             print(f"\n=>> Epoch {epoch + 1} Metrics ===")
             print(
@@ -255,6 +269,25 @@ def train(args):
             )
 
         LAST_history.append(LASTscore)
+        if (epoch + 1) == args.pruning_epoch:
+            print(f"\n=>> Epoch {epoch + 1} Pruning ===")
+            total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
+            global_th = np.sort(LASTscore.reshape(-1))[-total_remaining_dim]
+            LASTscore_formask = LASTscore
+            print(f"Global threshold for LAST scores (Pruning ratio: {args.pruning_ratio}%): {global_th:.5f}")
+            
+            print(f"[*] Evaluating pruning...")
+            test_loss, test_acc, _ = validate(state,
+                                            model_cls,
+                                            testloader,
+                                            seq_len,
+                                            in_dim,
+                                            args.batchnorm,
+                                            global_th=global_th,
+                                            LASTscore=LASTscore)
+
+            print(f"\tTest Accuracy: {test_acc:.4f}")
+
 
         # For early stopping purposes
         if val_loss < best_val_loss:
@@ -282,7 +315,9 @@ def train(args):
                                                int(seq_len // 2),
                                                in_dim,
                                                args.batchnorm,
-                                               step_rescale=2.0)
+                                               step_rescale=2.0,
+                                               global_th=global_th,
+                                               LASTscore=LASTscore_formask)
 
                 print(f"[*] Running Epoch {epoch + 1} Res 2 Test...")
                 test2_loss, test2_acc = validate(state, model_cls, aux_dataloaders['testloader2'], int(seq_len // 2), in_dim, args.batchnorm, step_rescale=2.0)
@@ -365,23 +400,23 @@ def train(args):
 
     # Prune and test
     if args.pruning:
-        total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
-        global_th = np.sort(LASTscore.reshape(-1))[-total_remaining_dim]
+        # total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
+        # global_th = np.sort(LASTscore.reshape(-1))[-total_remaining_dim]
 
-        print(f"\n=>> Pruning ratio {args.pruning_ratio} % ===")
-        print(f"\tAverage remaining state: {total_remaining_dim//args.n_layers:.0f}")
-        print(f"\tGlobal threshold: {global_th:.4f}")
-        print(f"[*] Evaluating pruning...")
-        test_loss, test_acc, _ = validate(state,
-                                        model_cls,
-                                        testloader,
-                                        seq_len,
-                                        in_dim,
-                                        args.batchnorm,
-                                        global_th=global_th,
-                                        LASTscore=LASTscore)
+        # print(f"\n=>> Pruning ratio {args.pruning_ratio} % ===")
+        # print(f"\tAverage remaining state: {total_remaining_dim//args.n_layers:.0f}")
+        # print(f"\tGlobal threshold: {global_th:.4f}")
+        # print(f"[*] Evaluating pruning...")
+        # test_loss, test_acc, _ = validate(state,
+        #                                 model_cls,
+        #                                 testloader,
+        #                                 seq_len,
+        #                                 in_dim,
+        #                                 args.batchnorm,
+        #                                 global_th=global_th,
+        #                                 LASTscore=LASTscore)
 
-        print(f"\tTest Accuracy: {test_acc:.4f}")
+        # print(f"\tTest Accuracy: {test_acc:.4f}")
 
         # Trace LAST history
         LAST_history = np.array(LAST_history)
