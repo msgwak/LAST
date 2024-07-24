@@ -13,6 +13,8 @@ if __name__ == "__main__":
 						help="When to prune states")
 	parser.add_argument("--pruning_ratio", type=int, default=30,
 						help="Desired model-level pruning ratio")
+	parser.add_argument("--pruning_method", type=str, default='LAST',
+						choices=["random", "uniformHinf", "globalHinf", "LAST"])
 	parser.add_argument("--USE_WANDB", type=str2bool, default=False,
 						help="log with wandb?")
 	parser.add_argument("--wandb_project", type=str, default=None,

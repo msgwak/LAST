@@ -1,7 +1,9 @@
 from functools import partial
+import jax
 from jax import random
 import jax.numpy as np
 from jax.scipy.linalg import block_diag
+from flax.training import checkpoints
 import wandb
 
 from .train_helpers import create_train_state, reduce_lr_on_plateau,\
@@ -25,7 +27,10 @@ def train(args):
 
     if args.USE_WANDB:
         # Make wandb config dictionary
-        wandb.init(project=args.wandb_project, job_type='model_training', config=vars(args), entity=args.wandb_entity)
+        wandb.init(project=args.wandb_project, 
+                   name=f"{args.dataset}_seed{args.jax_seed}_ep_{args.epochs}_pep_{args.pruning_epoch}_{args.pruning_method}",
+                   tags=[args.dataset],
+                   config=vars(args), entity=args.wandb_entity)
     else:
         wandb.init(mode='offline')
 
@@ -96,6 +101,11 @@ def train(args):
     print("V.shape={}".format(V.shape))
     print("Vinv.shape={}".format(Vinv.shape))
 
+    if args.pruning_method in ["uniformHinf", "globalHinf"]:
+        criterion = "Hinf"
+    elif args.pruning_method in ["random", "LAST"]:
+        criterion = "LAST"
+
     ssm_init_fn = init_S5SSM(H=args.d_model,
                              P=ssm_size,
                              Lambda_re_init=Lambda.real,
@@ -106,6 +116,7 @@ def train(args):
                              discretization=args.discretization,
                              dt_min=args.dt_min,
                              dt_max=args.dt_max,
+                             criterion=criterion,
                              conj_sym=args.conj_sym,
                              clip_eigs=args.clip_eigs,
                              bidirectional=args.bidirectional,
@@ -148,12 +159,17 @@ def train(args):
         total_remaining_dim = max(int(ssm_size * args.n_layers * (100 - args.pruning_ratio) / 100), 1) # clip for ratio = 100
         history_dir = f"results/{args.dataset}/{args.jax_seed}/"
         os.makedirs(history_dir, exist_ok=True)
-        history_fname = f"{history_dir}/eps_{args.epochs}_pruning_ep_{args.pruning_epoch}_history.npz"
+        history_fname = f"{history_dir}/eps_{args.epochs}_pep_{args.pruning_epoch}_{args.pruning_method}.npz"
+        plot_fname = f"{history_dir}/eps_{args.epochs}_pep_{args.pruning_epoch}_{args.pruning_method}.png"
         if os.path.isfile(history_fname):
             npzfile = np.load(history_fname)
-            LAST_history = npzfile['LAST']
-            Test_acc_history = npzfile['Test_acc']
-            global_th = np.sort(np.concatenate(LAST_history[args.pruning_epoch+1]))[-total_remaining_dim]
+            score_history = npzfile['score_history']
+            test_acc_history = npzfile['test_acc_history']
+            if 'score_for_mask' in npzfile.keys():
+                score_for_mask = npzfile['score_for_mask']
+            else:
+                score_for_mask = score_history[args.pruning_epoch]
+            th = np.sort(np.concatenate(score_history[args.pruning_epoch+1]))[-total_remaining_dim]
         
         else:
             # initialize training state
@@ -173,37 +189,37 @@ def train(args):
 
             # Training Loop over epochs
 
-            global_th = 0
-            LASTscore_formask = [None for _ in range(args.n_layers)]
-            LAST_history = []
-            Test_acc_history = []
+            th = 0
+            score_for_mask = [None for _ in range(args.n_layers)]
+            score_history = []
+            test_acc_history = []
             if valloader is not None:
-                _, _, LASTscore = validate(state,
+                _, _, score = validate(state,
                                             model_cls,
                                             valloader,
                                             seq_len,
                                             in_dim,
                                             args.batchnorm,
-                                            global_th=global_th,
-                                            LASTscore=LASTscore_formask)
+                                            th=th,
+                                            score_for_mask=score_for_mask)
                 _, test_acc, _ = validate(state,
                                                 model_cls,
                                                 testloader,
                                                 seq_len,
                                                 in_dim,
                                                 args.batchnorm,
-                                                global_th=global_th,
-                                                LASTscore=LASTscore_formask)
-                Test_acc_history.append(test_acc)
+                                                th=th,
+                                                score_for_mask=score_for_mask)
+                test_acc_history.append(test_acc)
             else:
-                _, val_acc, LASTscore = validate(state,
+                _, val_acc, score = validate(state,
                                             model_cls,
                                             testloader,
                                             seq_len,
                                             in_dim,
                                             args.batchnorm)
-                Test_acc_history.append(val_acc)
-            LAST_history.append(LASTscore)
+                test_acc_history.append(val_acc)
+            score_history.append(score)
             
             best_loss, best_acc, best_epoch = 100000000, -100000000.0, 0  # This best loss is val_loss
             count, best_val_loss = 0, 100000000  # This line is for early stopping purposes
@@ -244,19 +260,19 @@ def train(args):
                                                     in_dim,
                                                     args.batchnorm,
                                                     lr_params,
-                                                    global_th=global_th,
-                                                    LASTscore=LASTscore_formask)
+                                                    th=th,
+                                                    score_for_mask=score_for_mask)
 
                 if valloader is not None:
                     print(f"[*] Running Epoch {epoch + 1} Validation...")
-                    val_loss, val_acc, LASTscore = validate(state,
+                    val_loss, val_acc, score = validate(state,
                                                 model_cls,
                                                 valloader,
                                                 seq_len,
                                                 in_dim,
                                                 args.batchnorm,
-                                                global_th=global_th,
-                                                LASTscore=LASTscore_formask)
+                                                th=th,
+                                                score_for_mask=score_for_mask)
 
                     print(f"[*] Running Epoch {epoch + 1} Test...")
                     test_loss, test_acc, _ = validate(state,
@@ -265,8 +281,8 @@ def train(args):
                                                 seq_len,
                                                 in_dim,
                                                 args.batchnorm,
-                                                global_th=global_th,
-                                                LASTscore=LASTscore_formask)
+                                                th=th,
+                                                score_for_mask=score_for_mask)
 
                     print(f"\n=>> Epoch {epoch + 1} Metrics ===")
                     print(
@@ -274,33 +290,43 @@ def train(args):
                         f" Val Accuracy: {val_acc:.4f}"
                         f" Test Accuracy: {test_acc:.4f}"
                     )
-                    Test_acc_history.append(test_acc)
+                    test_acc_history.append(test_acc)
 
                 else:
                     # else use test set as validation set (e.g. IMDB)
                     print(f"[*] Running Epoch {epoch + 1} Test...")
-                    val_loss, val_acc, LASTscore = validate(state,
+                    val_loss, val_acc, score = validate(state,
                                                 model_cls,
                                                 testloader,
                                                 seq_len,
                                                 in_dim,
                                                 args.batchnorm,
-                                                global_th=global_th,
-                                                LASTscore=LASTscore_formask)
+                                                th=th,
+                                                score_for_mask=score_for_mask)
 
                     print(f"\n=>> Epoch {epoch + 1} Metrics ===")
                     print(
                         f"\tTrain Loss: {train_loss:.5f}  --Test Loss: {val_loss:.5f} --"
                         f" Test Accuracy: {val_acc:.4f}"
                     )
-                    Test_acc_history.append(val_acc)
+                    test_acc_history.append(val_acc)
 
-                LAST_history.append(LASTscore)
+                score_history.append(score)
+                # Pruning
                 if (epoch + 1) == args.pruning_epoch:
                     print(f"\n=>> Epoch {epoch + 1} Pruning ===")
-                    global_th = np.sort(LASTscore.reshape(-1))[-total_remaining_dim]
-                    LASTscore_formask = LASTscore
-                    print(f"Global threshold for LAST scores (Pruning ratio: {args.pruning_ratio}%): {global_th:.5f}")
+                    if args.pruning_method in ["globalHinf", "LAST"]:
+                        th = np.sort(score.reshape(-1))[-total_remaining_dim]
+                        score_for_mask = score
+                    elif args.pruning_method == "random":
+                        th = args.pruning_ratio / 100
+                        init_rng, key = random.split(init_rng, num=2)
+                        score_for_mask = random.uniform(key, score.shape)
+                    elif args.pruning_method == "uniformHinf":
+                        score_for_mask = score
+                        pass #TODO: local threshold
+
+                    print(f"Global threshold for scores (Pruning ratio: {args.pruning_ratio}%): {th:.5f}")
                     
                     print(f"[*] Evaluating pruning...")
                     test_loss, test_acc, _ = validate(state,
@@ -309,8 +335,8 @@ def train(args):
                                                     seq_len,
                                                     in_dim,
                                                     args.batchnorm,
-                                                    global_th=global_th,
-                                                    LASTscore=LASTscore)
+                                                    th=th,
+                                                    score_for_mask=score)
 
                     print(f"\tTest Accuracy: {test_acc:.4f}")
 
@@ -342,8 +368,8 @@ def train(args):
                                                     in_dim,
                                                     args.batchnorm,
                                                     step_rescale=2.0,
-                                                    global_th=global_th,
-                                                    LASTscore=LASTscore_formask)
+                                                    th=th,
+                                                    score_for_mask=score_for_mask)
 
                         print(f"[*] Running Epoch {epoch + 1} Res 2 Test...")
                         test2_loss, test2_acc = validate(state, model_cls, aux_dataloaders['testloader2'], int(seq_len // 2), in_dim, args.batchnorm, step_rescale=2.0)
@@ -423,15 +449,17 @@ def train(args):
 
                 if count > args.early_stop_patience:
                     break
-            Test_acc_history = np.array(Test_acc_history)
-            LAST_history = np.array(LAST_history)
-            np.savez(history_fname, LAST=LAST_history, Test_acc=Test_acc_history)
+            test_acc_history = np.array(test_acc_history)
+            score_history = np.array(score_history)
+            np.savez(history_fname, 
+                     score_history=score_history, 
+                     test_acc_history=test_acc_history,
+                     score_for_mask=score_for_mask)
 
     # Prune and test
     if args.pruning:
-        initial_global_th = np.sort(np.concatenate(LAST_history[0]))[-total_remaining_dim]
-        LAST_history = np.transpose(LAST_history, (1,0,2)) # [E, L, (P/2)] -> [L, E, (P/2)]
-
+        score_history = np.transpose(score_history, (1,0,2)) # [E, L, (P/2)] -> [L, E, (P/2)]
+        
         colors = cm.viridis(np.linspace(0, 1, ssm_size))
         nrows = 1 + (args.n_layers+1)//2
         height_ratios = [1.8] + [1 for _ in range(nrows-1)]
@@ -442,7 +470,7 @@ def train(args):
 
         # (1) Test accuracy history
         ax = axes[0, 0]
-        ax.plot(np.arange(args.epochs+1), Test_acc_history, color='mediumpurple', lw=2.5, marker='o', markersize=7)
+        ax.plot(np.arange(args.epochs+1), test_acc_history, color='mediumpurple', lw=2.5, marker='o', markersize=7)
         ax.axvline(x=args.pruning_epoch, color="olive", lw=2, linestyle='--',zorder=100)
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Test accuracy')
@@ -455,8 +483,8 @@ def train(args):
         ax_latency = axes[0, 1]
         ax_memory = ax_latency.twinx()
         # ------임시----- #
-        line1, = ax_latency.plot(np.arange(args.epochs+1), Test_acc_history, color='sandybrown', lw=2.5, marker='D', markersize=7, label='Latency')
-        line2, = ax_memory.plot(np.arange(args.epochs+1), LAST_history[0, :, 0], color='orchid', lw=2.5, marker='v', markersize=7, label='Memory')
+        line1, = ax_latency.plot(np.arange(args.epochs+1), test_acc_history, color='sandybrown', lw=2.5, marker='D', markersize=7, label='Latency')
+        line2, = ax_memory.plot(np.arange(args.epochs+1), score_history[0, :, 0], color='orchid', lw=2.5, marker='v', markersize=7, label='Memory')
         # ------임시----- #
         ax_latency.axvline(x=args.pruning_epoch, color="olive", lw=2, linestyle='--',zorder=100)
         ax_latency.set_xlabel('Epoch')
@@ -469,29 +497,32 @@ def train(args):
         labels = [line.get_label() for line in lines]
         ax_latency.legend(lines, labels, loc='lower right')
 
-        # (3) LAST history
+        # (3) Score history
         for l in range(args.n_layers):
             ax = axes[1+l // 2, l % 2]
-            initial_last_scores = LAST_history[l, 0, :]  # based on the initial value
-            sorted_indices = np.argsort(initial_last_scores)
+            initial_scores = score_history[l, 0, :]  # based on the initial value
+            sorted_indices = np.argsort(initial_scores)
             color_map = {idx: colors[sorted_indices.tolist().index(idx)] for idx in range(ssm_size)}
             for s in range(ssm_size):
-                if LAST_history[l,args.pruning_epoch,s] < global_th:
-                    ax.plot(np.arange(0, args.pruning_epoch+1), LAST_history[l,:args.pruning_epoch+1,s], color=color_map[s])
-                    ax.plot(np.arange(args.pruning_epoch, args.epochs+1), LAST_history[l,args.pruning_epoch:,s], color="silver")
+                if score_for_mask[l,s] < th:
+                    ax.plot(np.arange(0, args.pruning_epoch+1), score_history[l,:args.pruning_epoch+1,s], color=color_map[s])
+                    ax.plot(np.arange(args.pruning_epoch, args.epochs+1), score_history[l,args.pruning_epoch:,s], color="silver")
                 else:
-                    ax.plot(np.arange(args.epochs+1), LAST_history[l,:,s], color=color_map[s])
+                    ax.plot(np.arange(args.epochs+1), score_history[l,:,s], color=color_map[s])
 
             # current pruning
-            # ax.axhline(y=global_th, color="olive", lw=2, linestyle='--',zorder=100)
+            # ax.axhline(y=th, color="olive", lw=2, linestyle='--',zorder=100)
             ax.axvline(x=args.pruning_epoch, color="olive", lw=2, linestyle='--',zorder=100)
             ax.set_yscale('log')
             ax.set_title(f'Layer {l+1}')
             ax.set_xlabel('Epoch')
-            ax.set_ylabel('LAST score')
+            if criterion == 'LAST':
+                ax.set_ylabel('LAST score')
+            elif criterion == 'Hinf':
+                ax.set_ylabel(r'$\mathcal{H}_{\infty}$ score')
 
             ax.set_xticks(np.arange(args.epochs + 1))
             ax.set_xticklabels(xticklabels)
 
         plt.tight_layout()
-        plt.savefig(f'{history_dir}/last_history.png')
+        plt.savefig(plot_fname)

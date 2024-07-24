@@ -124,13 +124,13 @@ def create_train_state(model_cls,
     else:
         dummy_input = np.ones((bsz, seq_len, in_dim))
         integration_timesteps = np.ones((bsz, seq_len, ))
-    global_th = 0
+    th = 0
     model = model_cls(training=True)
-    LASTscore = [None for _ in range(model.n_layers)]
+    score_for_mask = [None for _ in range(model.n_layers)]
     init_rng, dropout_rng = jax.random.split(rng, num=2)
     variables = model.init({"params": init_rng,
                             "dropout": dropout_rng},
-                           dummy_input, integration_timesteps, global_th, LASTscore
+                           dummy_input, integration_timesteps, th, score_for_mask
                            )
     if batchnorm:
         params = variables["params"].unfreeze()
@@ -330,7 +330,7 @@ def prep_batch(batch: tuple,
     return full_inputs, targets.astype(float), integration_timesteps
 
 
-def train_epoch(state, rng, model, trainloader, seq_len, in_dim, batchnorm, lr_params, global_th=0, LASTscore=None):
+def train_epoch(state, rng, model, trainloader, seq_len, in_dim, batchnorm, lr_params, th=0, score_for_mask=None):
     """
     Training function for an epoch that loops over batches.
     """
@@ -339,8 +339,8 @@ def train_epoch(state, rng, model, trainloader, seq_len, in_dim, batchnorm, lr_p
     batch_losses = []
 
     decay_function, ssm_lr, lr, step, end_step, opt_config, lr_min = lr_params
-    if LASTscore is None:
-        LASTscore = [None for _ in range(model.n_layers)]
+    if score_for_mask is None:
+        score_for_mask = [None for _ in range(model.n_layers)]
 
     for batch_idx, batch in enumerate(tqdm(trainloader)):
         inputs, labels, integration_times = prep_batch(batch, seq_len, in_dim)
@@ -351,8 +351,8 @@ def train_epoch(state, rng, model, trainloader, seq_len, in_dim, batchnorm, lr_p
             inputs,
             labels,
             integration_times,
-            global_th,
-            LASTscore,
+            th,
+            score_for_mask,
             model,
             batchnorm,
         )
@@ -364,20 +364,20 @@ def train_epoch(state, rng, model, trainloader, seq_len, in_dim, batchnorm, lr_p
     return state, np.mean(np.array(batch_losses)), step
 
 
-def validate(state, model, testloader, seq_len, in_dim, batchnorm, step_rescale=1.0, global_th=0, LASTscore=None):
+def validate(state, model, testloader, seq_len, in_dim, batchnorm, step_rescale=1.0, th=0, score_for_mask=None):
     """Validation function that loops over batches"""
     model = model(training=False, step_rescale=step_rescale)
-    if LASTscore is None:
-        LASTscore = [None for _ in range(model.n_layers)]
+    if score_for_mask is None:
+        score_for_mask = [None for _ in range(model.n_layers)]
     losses, accuracies, preds = np.array([]), np.array([]), np.array([])
     for batch_idx, batch in enumerate(tqdm(testloader)):
         inputs, labels, integration_timesteps = prep_batch(batch, seq_len, in_dim)
-        loss, acc, pred, LASTscore = eval_step(inputs, labels, integration_timesteps, global_th, LASTscore, state, model, batchnorm)
+        loss, acc, pred, score = eval_step(inputs, labels, integration_timesteps, th, score_for_mask, state, model, batchnorm)
         losses = np.append(losses, loss)
         accuracies = np.append(accuracies, acc)
 
     aveloss, aveaccu = np.mean(losses), np.mean(accuracies)
-    return aveloss, aveaccu, LASTscore
+    return aveloss, aveaccu, score
 
 
 @partial(jax.jit, static_argnums=(7, 8))
@@ -386,8 +386,8 @@ def train_step(state,
                batch_inputs,
                batch_labels,
                batch_integration_timesteps,
-               global_th,
-               LASTscore,
+               th,
+               score_for_mask,
                model,
                batchnorm,
                ):
@@ -397,14 +397,14 @@ def train_step(state,
         if batchnorm:
             (logits, _), mod_vars = model.apply(
                 {"params": params, "batch_stats": state.batch_stats},
-                batch_inputs, batch_integration_timesteps, global_th, LASTscore,
+                batch_inputs, batch_integration_timesteps, th, score_for_mask,
                 rngs={"dropout": rng},
                 mutable=["intermediates", "batch_stats"],
             )
         else:
             (logits, _), mod_vars = model.apply(
                 {"params": params},
-                batch_inputs, batch_integration_timesteps, global_th, LASTscore,
+                batch_inputs, batch_integration_timesteps, th, score_for_mask,
                 rngs={"dropout": rng},
                 mutable=["intermediates"],
             )
@@ -426,22 +426,22 @@ def train_step(state,
 def eval_step(batch_inputs,
               batch_labels,
               batch_integration_timesteps,
-              global_th,
-              LASTscore,
+              th,
+              score_for_mask,
               state,
               model,
               batchnorm,
               ):
     if batchnorm:
-        logits, LASTscore = model.apply({"params": state.params, "batch_stats": state.batch_stats},
-                             batch_inputs, batch_integration_timesteps, global_th, LASTscore,
+        logits, score = model.apply({"params": state.params, "batch_stats": state.batch_stats},
+                             batch_inputs, batch_integration_timesteps, th, score_for_mask,
                              )
     else:
-        logits, LASTscore = model.apply({"params": state.params},
-                             batch_inputs, batch_integration_timesteps, global_th, LASTscore,
+        logits, score = model.apply({"params": state.params},
+                             batch_inputs, batch_integration_timesteps, th, score_for_mask,
                              )
 
     losses = cross_entropy_loss(logits, batch_labels)
     accs = compute_accuracy(logits, batch_labels)
 
-    return losses, accs, logits, LASTscore
+    return losses, accs, logits, score

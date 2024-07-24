@@ -1,5 +1,5 @@
 python run_train.py --pruning=True --pruning_ratio=30 \
-                    --pruning_epoch=1 --epochs=5 \
+                    --pruning_epoch=5 --epochs=10 \
                     --C_init=lecun_normal --batchnorm=True --bidirectional=True \
                     --blocks=3 --bsz=50 --clip_eigs=True --d_model=512 --dataset=lra-cifar-classification \
                     --jax_seed=16416 --lr_factor=4.5 --n_layers=6 --opt_config=BfastandCdecay \

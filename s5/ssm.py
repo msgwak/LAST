@@ -100,6 +100,7 @@ class S5SSM(nn.Module):
     discretization: str
     dt_min: float
     dt_max: float
+    criterion: str = "LAST"
     conj_sym: bool = True
     clip_eigs: bool = False
     bidirectional: bool = False
@@ -236,24 +237,30 @@ class S5SSM(nn.Module):
                 Hinfscore = np.linalg.norm(self.C_tilde, axis=0)**2 * np.linalg.norm(self.B_bar, axis=1)**2 / ((1-np.abs(self.Lambda_bar))**2 + 1e-8)
             order = np.argsort(Hinfscore)
             LASTscore = np.sort(Hinfscore) / np.cumsum(np.sort(Hinfscore)[::-1])[::-1]
-            self.LASTscore = Hinfscore.at[order].set(LASTscore)
+            LASTscore = Hinfscore.at[order].set(LASTscore)
+
+            if self.criterion == "LAST":
+                self.score = LASTscore
+            elif self.criterion == "Hinf":
+                self.score = Hinfscore
 
 
-    def __call__(self, input_sequence, global_th, LASTscore=None):
+
+    def __call__(self, input_sequence, th, score_for_mask=None):
         """
         Compute the LxH output of the S5 SSM given an LxH input sequence
         using a parallel scan.
         Args:
              input_sequence (float32): input sequence (L, H)
-             global_th (float32): global threshold for LAST pruning (P, )
+             th (float32): threshold for pruning (P, )
         Returns:
             output sequence (float32): (L, H)
         """
-        if LASTscore is None:
-            LASTscore = self.LASTscore
+        if score_for_mask is None:
+            score_for_mask = self.score
 
         if self.pruning:
-            mask = LASTscore >= global_th
+            mask = score_for_mask >= th
 
             c_mask = np.tile(mask, 2) if self.bidirectional else mask
             ys = apply_ssm(mask * self.Lambda_bar,
@@ -273,7 +280,7 @@ class S5SSM(nn.Module):
         # Add feedthrough matrix output Du;
         Du = jax.vmap(lambda u: self.D * u)(input_sequence)
         if self.pruning:
-            return ys + Du, self.LASTscore
+            return ys + Du, self.score
         else:
             return ys + Du
 
@@ -288,6 +295,7 @@ def init_S5SSM(H,
                discretization,
                dt_min,
                dt_max,
+               criterion,
                conj_sym,
                clip_eigs,
                bidirectional,
@@ -306,6 +314,7 @@ def init_S5SSM(H,
                    discretization=discretization,
                    dt_min=dt_min,
                    dt_max=dt_max,
+                   criterion=criterion,
                    conj_sym=conj_sym,
                    clip_eigs=clip_eigs,
                    bidirectional=bidirectional,
